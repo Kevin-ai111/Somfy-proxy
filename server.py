@@ -72,6 +72,33 @@ def cache_stats():
     valid = sum(1 for e in cache.values() if (time.time() - e['ts']) < CACHE_TTL)
     return {'total': total, 'valid': valid, 'expired': total - valid}
 
+# ===================== GOOGLE PLACES =====================
+
+def fetch_google_reviews(name, address, api_key):
+    """Sucht Firma per Places Text Search und gibt Bewertungen zurueck."""
+    if not api_key:
+        return None
+    try:
+        query = "{} {}".format(name, address).strip()
+        search_url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={}&inputtype=textquery&fields=place_id,name,rating,user_ratings_total&key={}".format(
+            urllib.parse.quote(query), api_key
+        )
+        req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        candidates = data.get('candidates', [])
+        if not candidates:
+            return None
+        place = candidates[0]
+        return {
+            'rating': place.get('rating'),
+            'review_count': place.get('user_ratings_total'),
+            'place_name': place.get('name', ''),
+        }
+    except Exception as e:
+        print("  Google Places Fehler: {}".format(e))
+        return None
+
 # ===================== TEXT EXTRACTION =====================
 
 def extract_text(html):
@@ -345,14 +372,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cached = cache_get(url)
         if cached:
             self._json({'text': cached['text'], 'pages': cached['pages'],
-                        'screenshot': cached.get('screenshot'), 'ok': True, 'from_cache': True})
+                        'screenshot': cached.get('screenshot'), 'reviews': cached.get('reviews'),
+                        'ok': True, 'from_cache': True})
             return
+
+        name_param = params.get('name', [''])[0]
+        address_param = params.get('address', [''])[0]
+        gkey_param = params.get('gkey', [''])[0]
 
         print("\n  Fetche: {}".format(url))
         try:
             text, pages, screenshot = fetch_website_deep(url)
-            cache_set(url, {'text': text, 'pages': pages, 'screenshot': screenshot})
-            self._json({'text': text, 'pages': pages, 'screenshot': screenshot, 'ok': True, 'from_cache': False})
+            # Google Reviews parallel holen
+            reviews = None
+            if gkey_param and name_param:
+                reviews = fetch_google_reviews(name_param, address_param, gkey_param)
+                if reviews:
+                    print("  Google: {} Sterne ({} Bewertungen)".format(
+                        reviews.get('rating'), reviews.get('review_count')))
+            cache_set(url, {'text': text, 'pages': pages, 'screenshot': screenshot, 'reviews': reviews})
+            self._json({'text': text, 'pages': pages, 'screenshot': screenshot,
+                        'reviews': reviews, 'ok': True, 'from_cache': False})
         except Exception as e:
             print("  Fehler: {}".format(e))
             self._json({'error': str(e), 'ok': False})
