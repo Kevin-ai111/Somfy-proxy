@@ -15,21 +15,112 @@ try:
 except ImportError:
     USE_BS4 = False
 
+
+RELEVANT_SLUGS = [
+    # Antriebe & Steuerung
+    'antrieb', 'antriebe', 'steuerung', 'motor', 'motoren', 'automation',
+    'smart-home', 'smarthome', 'hausautomation', 'automatisierung',
+    # Sonnenschutz & Rollladen
+    'rollladen', 'rolladen', 'sonnenschutz', 'markise', 'markisen',
+    'jalousie', 'jalousien', 'raffstore', 'raffstores', 'rollo', 'rollos',
+    'insektenschutz', 'plissee', 'verdunklung',
+    # Produkte & Sortiment
+    'produkt', 'produkte', 'produktwelt', 'sortiment', 'marken', 'hersteller',
+    'lieferant', 'lieferanten', 'partner', 'partners', 'kooperation',
+    'katalog', 'shop', 'onlineshop',
+    # Referenzen & Projekte
+    'referenz', 'referenzen', 'projekt', 'projekte', 'galerie', 'gallery',
+    'beispiel', 'beispiele', 'portfolio',
+    # Leistungen
+    'leistung', 'leistungen', 'service', 'services', 'montage',
+    'einbau', 'installation', 'beratung',
+    # Über uns
+    'ueber-uns', 'ueber', 'uber-uns', 'about', 'unternehmen', 'firma',
+    'team', 'wir-fuer-sie', 'wir-fuer-euch',
+    # Tore & Sicherheit (oft Antriebe)
+    'tor', 'tore', 'garagentor', 'sektionaltor', 'carport',
+]
+
+def score_link(path):
+    """Gibt einen Relevanz-Score für einen Pfad zurück. Höher = wichtiger."""
+    path_lower = path.lower().rstrip('/')
+    score = 0
+    # Direkte Slug-Treffer
+    for slug in RELEVANT_SLUGS:
+        if slug in path_lower:
+            score += 10
+            break
+    # Navigationstiefe – flachere Seiten bevorzugen
+    depth = path_lower.count('/')
+    score -= depth  # tiefere Seiten leicht bestrafen
+    return score
+
+def find_relevant_links(html, base_url):
+    """Findet relevante Unterseiten. Crawlt Nav-Menüs mit Priorität."""
+    base = urllib.parse.urlparse(base_url)
+    base_origin = f"{base.scheme}://{base.netloc}"
+
+    nav_links = []
+    other_links = []
+
+    if USE_BS4:
+        soup = BeautifulSoup(html, 'html.parser')
+        # Nav-Links zuerst (höchste Priorität)
+        for nav in soup.find_all(['nav', 'header', 'ul']):
+            for a in nav.find_all('a', href=True):
+                nav_links.append(a['href'])
+        # Alle anderen Links
+        for a in soup.find_all('a', href=True):
+            other_links.append(a['href'])
+    else:
+        nav_links = re.findall(r'href=["']([^"']+)["']', html, re.IGNORECASE)
+        other_links = nav_links
+
+    seen = set()
+    scored = []
+
+    def process_href(href, bonus=0):
+        href = href.strip()
+        if not href or href.startswith('#') or href.startswith('mailto:') or href.startswith('tel:') or href.startswith('javascript:'):
+            return
+        # Dateiendungen überspringen
+        if re.search(r'\.(pdf|jpg|jpeg|png|gif|svg|css|js|xml|zip)$', href, re.I):
+            return
+        if href.startswith('http'):
+            full = href
+        elif href.startswith('/'):
+            full = base_origin + href
+        else:
+            full = base_origin + '/' + href
+        parsed = urllib.parse.urlparse(full)
+        # Nur gleiche Domain
+        if parsed.netloc != base.netloc:
+            return
+        # Startseite und reine Anker überspringen
+        path = parsed.path.rstrip('/')
+        if not path or path == '/' or full in seen:
+            return
+        seen.add(full)
+        s = score_link(path) + bonus
+        if s > 0:
+            scored.append((s, full))
+
+    for href in nav_links:
+        process_href(href, bonus=5)  # Nav-Links bevorzugen
+    for href in other_links:
+        process_href(href, bonus=0)
+
+    # Sortiert nach Score, höchste zuerst
+    scored.sort(key=lambda x: -x[0])
+    print(f"    Top-Links gefunden: {[u for _,u in scored[:12]]}")
+    return [url for _, url in scored[:10]]  # Max 10 Kandidaten
+
+
 PORT = int(os.environ.get('PORT', 7723))
 CACHE_TTL = int(os.environ.get('CACHE_TTL', 7 * 24 * 3600))  # 7 Tage default
 
 # In-Memory Cache: { url_hash: { text, pages, screenshot, timestamp } }
 cache = {}
-
-RELEVANT_SLUGS = [
-    'referenz', 'referenzen', 'partner', 'partners', 'hersteller',
-    'produkt', 'produkte', 'produktwelt', 'sortiment', 'marken',
-    'leistung', 'leistungen', 'service', 'services',
-    'lieferant', 'lieferanten', 'kooperationen', 'kooperation',
-    'ueber-uns', 'ueber', 'uber-uns', 'about', 'unternehmen',
-    'team', 'galerie', 'gallery', 'projekte', 'projekt',
-    'shop', 'onlineshop', 'katalog',
-]
 
 def url_key(url):
     return hashlib.md5(url.strip().lower().encode()).hexdigest()
@@ -67,34 +158,6 @@ def extract_text(html):
     text = re.sub(r'\n{4,}', '\n\n', text)
     return text.strip()
 
-def find_relevant_links(html, base_url):
-    found = []
-    base = urllib.parse.urlparse(base_url)
-    base_origin = f"{base.scheme}://{base.netloc}"
-    if USE_BS4:
-        soup = BeautifulSoup(html, 'html.parser')
-        links = [a.get('href','') for a in soup.find_all('a', href=True)]
-    else:
-        links = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
-    seen = set()
-    for href in links:
-        href = href.strip()
-        if not href or href.startswith('#') or href.startswith('mailto:') or href.startswith('tel:'):
-            continue
-        if href.startswith('http'):
-            full = href
-        elif href.startswith('/'):
-            full = base_origin + href
-        else:
-            full = base_origin + '/' + href
-        parsed = urllib.parse.urlparse(full)
-        if parsed.netloc != base.netloc:
-            continue
-        path_lower = parsed.path.lower().rstrip('/')
-        if any(s in path_lower for s in RELEVANT_SLUGS) and full not in seen:
-            seen.add(full)
-            found.append(full)
-    return found[:8]
 
 def fetch_url(url, timeout=10):
     headers = {
@@ -120,24 +183,46 @@ def fetch_website_deep(url):
     if not url.startswith('http'):
         url = 'https://' + url
     results = {}
+
+    # 1. Startseite holen
     print(f"    Startseite: {url}")
     main_html = fetch_url(url)
     main_text = extract_text(main_html)
     results[url] = main_text
-    subpages = find_relevant_links(main_html, url)
-    print(f"    Unterseiten gefunden: {len(subpages)}")
-    for sub_url in subpages:
-        if len(results) >= 6:
+
+    # 2. Relevante Links finden (priorisiert nach Score)
+    candidates = find_relevant_links(main_html, url)
+    print(f"    Kandidaten: {len(candidates)}")
+
+    # 3. Unterseiten crawlen – max 7 zusätzliche Seiten
+    for sub_url in candidates:
+        if len(results) >= 8:
             break
         try:
-            print(f"    Unterseite: {sub_url}")
+            print(f"    Crawle: {sub_url}")
             html = fetch_url(sub_url, timeout=8)
             text = extract_text(html)
             if text and len(text) > 100:
                 results[sub_url] = text
+                # Wenn diese Unterseite selbst weitere relevante Links hat,
+                # diese auch noch prüfen (eine Ebene tiefer)
+                sub_candidates = find_relevant_links(html, sub_url)
+                for deep_url in sub_candidates[:3]:
+                    if deep_url not in results and len(results) < 8:
+                        try:
+                            deep_html = fetch_url(deep_url, timeout=6)
+                            deep_text = extract_text(deep_html)
+                            if deep_text and len(deep_text) > 100:
+                                results[deep_url] = deep_text
+                                print(f"    Tiefe 2: {deep_url}")
+                        except Exception:
+                            pass
         except Exception as e:
             print(f"    ✗ {sub_url}: {e}")
-    per_page_limit = max(1500, 6000 // len(results))
+
+    # 4. Text zusammenführen
+    # Pro Seite Token-Budget gleichmäßig verteilen, max 8000 Zeichen gesamt
+    per_page_limit = max(800, 8000 // len(results))
     combined = []
     for page_url, text in results.items():
         slug = urllib.parse.urlparse(page_url).path.strip('/') or 'startseite'
