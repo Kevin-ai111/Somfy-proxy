@@ -136,19 +136,28 @@ def fetch_url(url, timeout=10):
         'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
     }
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            enc = resp.headers.get_content_charset() or 'utf-8'
-            return raw.decode(enc, errors='replace')
-    except Exception:
-        url_http = url.replace('https://', 'http://', 1)
-        req2 = urllib.request.Request(url_http, headers=headers)
-        with urllib.request.urlopen(req2, timeout=timeout) as resp:
-            raw = resp.read()
-            enc = resp.headers.get_content_charset() or 'utf-8'
-            return raw.decode(enc, errors='replace')
+    # Redirects folgen (www -> non-www, http -> https etc.)
+    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+    urls_to_try = [url]
+    if url.startswith('https://www.'):
+        urls_to_try.append('https://' + url[12:])
+    elif url.startswith('https://') and not url.startswith('https://www.'):
+        urls_to_try.append('https://www.' + url[8:])
+    if not url.startswith('http://'):
+        urls_to_try.append(url.replace('https://', 'http://', 1))
+
+    last_err = None
+    for try_url in urls_to_try:
+        try:
+            req = urllib.request.Request(try_url, headers=headers)
+            with opener.open(req, timeout=timeout) as resp:
+                raw = resp.read()
+                enc = resp.headers.get_content_charset() or 'utf-8'
+                return raw.decode(enc, errors='replace')
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err
 
 def fetch_single(args):
     sub_url, timeout = args
@@ -188,12 +197,19 @@ def fetch_implisense(name, address, rapidapi_key):
         if not company_id:
             return None
 
+        # Bilanzsumme direkt aus Lookup-Response holen falls vorhanden
+        financials = data.get('financials', {})
+        balance_sheet = financials.get('balanceSheetTotal')
+        balance_year = financials.get('year')
+
         result = {
             'id': company_id,
             'name': data.get('name', ''),
             'rechtsform': data.get('legalForm', ''),
             'gruendung': data.get('foundingYear'),
             'mitarbeiter_implisense': data.get('headCount'),
+            'bilanzsumme': balance_sheet,
+            'bilanzsumme_jahr': balance_year,
             'umsatz': None,
             'umsatz_jahr': None,
         }
