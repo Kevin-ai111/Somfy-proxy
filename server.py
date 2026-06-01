@@ -307,38 +307,38 @@ def fetch_website_deep(url, apiflash_key=None):
                 except Exception:
                     pass
 
-    # 5. Screenshot der besten Partner/Hersteller-Seite (bis zu 2, via ApiFlash)
+    # 5. Screenshot via ApiFlash: nur die beste Partner/Hersteller-Seite (Logos)
     screenshots = []
     if apiflash_key:
-        # Alle Seiten nach Screenshot-Score sortieren
+        base = urllib.parse.urlparse(url)
+        base_origin = "{}://{}".format(base.scheme, base.netloc)
         scored_pages = [(screenshot_score(p), p) for p in results.keys()]
         scored_pages = [(s, p) for s, p in scored_pages if s > 0]
         scored_pages.sort(key=lambda x: -x[0])
-
-        # Falls gar keine relevante Seite gecrawlt: gezielt typische Pfade probieren
         if not scored_pages:
-            base = urllib.parse.urlparse(url)
-            base_origin = "{}://{}".format(base.scheme, base.netloc)
             for guess in ['/steuerungen/', '/produkte/', '/partner/', '/smart-home/']:
                 scored_pages.append((1, base_origin + guess))
+        logo_target = scored_pages[0][1] if scored_pages else url
+        img = fetch_apiflash_screenshot(logo_target, apiflash_key)
+        if img:
+            slug = urllib.parse.urlparse(logo_target).path.strip('/').split('/')[-1] or 'startseite'
+            screenshots.append({'url': logo_target, 'image': img, 'slug': slug, 'kind': 'logo'})
 
-        # Top-2 screenshoten
-        targets = [p for _, p in scored_pages[:2]] if scored_pages else [url]
-        if not targets:
-            targets = [url]
+    # 6. Text zusammenfuehren - Team/Über-uns-Seiten bekommen mehr Platz
+    team_slugs = ['team', 'ueber', 'uber-uns', 'uber', 'about', 'ansprechpartner',
+                  'mitarbeiter', 'unternehmen', 'wir', 'firma', 'karriere', 'jobs', 'impressum']
+    def is_team_page(page_url):
+        path = urllib.parse.urlparse(page_url).path.lower()
+        return any(t in path for t in team_slugs)
 
-        for ss_target in targets:
-            img = fetch_apiflash_screenshot(ss_target, apiflash_key)
-            if img:
-                slug = urllib.parse.urlparse(ss_target).path.strip('/').split('/')[-1] or 'startseite'
-                screenshots.append({'url': ss_target, 'image': img, 'slug': slug})
-
-    # 6. Text zusammenfuehren
-    per_page_limit = max(800, 8000 // len(results))
+    base_limit = max(800, 7000 // len(results))
     combined = []
     for page_url, text in results.items():
         slug = urllib.parse.urlparse(page_url).path.strip('/') or 'startseite'
-        combined.append("=== {} ===\n{}".format(slug, text[:per_page_limit]))
+        # Team-Seiten: doppeltes Limit, damit Mitarbeiterinfos nicht abgeschnitten werden
+        limit = base_limit * 2 if is_team_page(page_url) else base_limit
+        marker = " [TEAM/MITARBEITER-SEITE]" if is_team_page(page_url) else ""
+        combined.append("=== {}{} ===\n{}".format(slug, marker, text[:limit]))
     full_text = '\n\n'.join(combined)
     print("  Gesamt: {} Zeichen aus {} Seiten, {} Screenshots".format(
         len(full_text), len(results), len(screenshots)))
