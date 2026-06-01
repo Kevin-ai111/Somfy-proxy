@@ -6,8 +6,7 @@ import re
 import os
 import time
 import hashlib
-import base64
-import threading
+import concurrent.futures
 
 try:
     from bs4 import BeautifulSoup
@@ -15,19 +14,9 @@ try:
 except ImportError:
     USE_BS4 = False
 
-try:
-    from playwright.sync_api import sync_playwright
-    USE_PLAYWRIGHT = True
-    print("Playwright verfuegbar")
-except ImportError:
-    USE_PLAYWRIGHT = False
-    print("Playwright nicht verfuegbar - Fallback auf urllib")
-
 PORT = int(os.environ.get('PORT', 7723))
 CACHE_TTL = int(os.environ.get('CACHE_TTL', 7 * 24 * 3600))
-
 cache = {}
-playwright_lock = threading.Lock()
 
 RELEVANT_SLUGS = [
     'antrieb', 'antriebe', 'steuerung', 'motor', 'motoren', 'automation',
@@ -46,8 +35,6 @@ RELEVANT_SLUGS = [
     'team', 'wir-fuer-sie', 'wir-fuer-euch',
     'tor', 'tore', 'garagentor', 'sektionaltor', 'carport',
 ]
-
-# ===================== CACHE =====================
 
 def url_key(url):
     return hashlib.md5(url.strip().lower().encode()).hexdigest()
@@ -72,35 +59,6 @@ def cache_stats():
     valid = sum(1 for e in cache.values() if (time.time() - e['ts']) < CACHE_TTL)
     return {'total': total, 'valid': valid, 'expired': total - valid}
 
-# ===================== GOOGLE PLACES =====================
-
-def fetch_google_reviews(name, address, api_key):
-    """Sucht Firma per Places Text Search und gibt Bewertungen zurueck."""
-    if not api_key:
-        return None
-    try:
-        query = "{} {}".format(name, address).strip()
-        search_url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={}&inputtype=textquery&fields=place_id,name,rating,user_ratings_total&key={}".format(
-            urllib.parse.quote(query), api_key
-        )
-        req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        candidates = data.get('candidates', [])
-        if not candidates:
-            return None
-        place = candidates[0]
-        return {
-            'rating': place.get('rating'),
-            'review_count': place.get('user_ratings_total'),
-            'place_name': place.get('name', ''),
-        }
-    except Exception as e:
-        print("  Google Places Fehler: {}".format(e))
-        return None
-
-# ===================== TEXT EXTRACTION =====================
-
 def extract_text(html):
     if USE_BS4:
         soup = BeautifulSoup(html, 'html.parser')
@@ -115,8 +73,6 @@ def extract_text(html):
     text = re.sub(r'[ \t]{3,}', ' ', text)
     text = re.sub(r'\n{4,}', '\n\n', text)
     return text.strip()
-
-# ===================== LINK SCORING =====================
 
 def score_link(path):
     path_lower = path.lower().rstrip('/')
@@ -147,11 +103,10 @@ def find_relevant_links(html, base_url):
 
     seen = set()
     scored = []
-
     for href, bonus in all_hrefs:
         href = href.strip()
-        if not href or href.startswith('#') or href.startswith('mailto:') or \
-           href.startswith('tel:') or href.startswith('javascript:'):
+        if not href or href.startswith('#') or href.startswith('mailto:') \
+           or href.startswith('tel:') or href.startswith('javascript:'):
             continue
         if file_ext.search(href):
             continue
@@ -175,119 +130,104 @@ def find_relevant_links(html, base_url):
     scored.sort(key=lambda x: -x[0])
     return [url for _, url in scored[:10]]
 
-# ===================== PLAYWRIGHT FETCH =====================
-
-def playwright_fetch_page(url, screenshot=False):
-    """Holt HTML und optional Screenshot per Playwright (echter Browser)."""
-    print("  [PW] Starte Playwright fuer: {} (screenshot={})".format(url, screenshot))
-    with playwright_lock:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-            )
-            context = browser.new_context(
-                viewport={'width': 1280, 'height': 900},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                locale='de-DE',
-            )
-            page = context.new_page()
-            page.set_default_timeout(15000)
-            try:
-                print("  [PW] Browser gestartet, lade Seite...")
-                page.goto(url, wait_until='domcontentloaded', timeout=15000)
-                # Kurz warten damit lazy-loaded Inhalte/Logos erscheinen
-                page.wait_for_timeout(2000)
-                print("  [PW] Seite geladen, extrahiere Content...")
-                html = page.content()
-                img_b64 = None
-                if screenshot:
-                    img_bytes = page.screenshot(type='png', full_page=False)
-                    img_b64 = base64.b64encode(img_bytes).decode('utf-8')
-                    print("  Screenshot: {} bytes".format(len(img_bytes)))
-            finally:
-                browser.close()
-            return html, img_b64
-
-def fallback_fetch(url):
-    """urllib-Fallback wenn Playwright nicht verfuegbar."""
+def fetch_url(url, timeout=10):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'de-DE,de;q=0.9',
+        'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
     }
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             enc = resp.headers.get_content_charset() or 'utf-8'
             return raw.decode(enc, errors='replace')
     except Exception:
         url_http = url.replace('https://', 'http://', 1)
         req2 = urllib.request.Request(url_http, headers=headers)
-        with urllib.request.urlopen(req2, timeout=10) as resp:
+        with urllib.request.urlopen(req2, timeout=timeout) as resp:
             raw = resp.read()
             enc = resp.headers.get_content_charset() or 'utf-8'
             return raw.decode(enc, errors='replace')
 
-def fetch_html(url, screenshot=False):
-    """Holt HTML (und optional Screenshot) - Playwright bevorzugt."""
-    if USE_PLAYWRIGHT:
-        html, img = playwright_fetch_page(url, screenshot=screenshot)
-        return html, img
-    else:
-        html = fallback_fetch(url)
-        return html, None
+def fetch_single(args):
+    sub_url, timeout = args
+    try:
+        html = fetch_url(sub_url, timeout=timeout)
+        text = extract_text(html)
+        if text and len(text) > 100:
+            return sub_url, html, text
+    except Exception as e:
+        print("  Fehler {}: {}".format(sub_url, e))
+    return sub_url, None, None
 
-# ===================== DEEP CRAWL =====================
+def fetch_google_reviews(name, address, api_key):
+    if not api_key:
+        return None
+    try:
+        query = "{} {}".format(name, address).strip()
+        search_url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={}&inputtype=textquery&fields=place_id,name,rating,user_ratings_total&key={}".format(
+            urllib.parse.quote(query), api_key
+        )
+        req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        candidates = data.get('candidates', [])
+        if not candidates:
+            return None
+        place = candidates[0]
+        return {
+            'rating': place.get('rating'),
+            'review_count': place.get('user_ratings_total'),
+            'place_name': place.get('name', ''),
+        }
+    except Exception as e:
+        print("  Google Places Fehler: {}".format(e))
+        return None
 
 def fetch_website_deep(url):
     if not url.startswith('http'):
         url = 'https://' + url
-
     results = {}
-    main_screenshot = None
 
-    # 1. Startseite MIT Screenshot
+    # 1. Startseite
     print("  Startseite: {}".format(url))
-    try:
-        main_html, main_screenshot = fetch_html(url, screenshot=True)
-        main_text = extract_text(main_html)
-        results[url] = main_text
-    except Exception as e:
-        print("  Fehler Startseite: {}".format(e))
-        raise
+    main_html = fetch_url(url)
+    main_text = extract_text(main_html)
+    results[url] = main_text
 
-    # 2. Relevante Unterseiten finden und crawlen
+    # 2. Kandidaten
     candidates = find_relevant_links(main_html, url)
     print("  Kandidaten: {}".format(len(candidates)))
 
-    for sub_url in candidates:
+    # 3. Unterseiten parallel per urllib
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        futures = list(ex.map(fetch_single, [(u, 8) for u in candidates[:8]]))
+
+    subpage_data = {}
+    for sub_url, html, text in futures:
+        if text and len(results) < 8:
+            results[sub_url] = text
+            if html:
+                subpage_data[sub_url] = html
+
+    # 4. Tiefe 2
+    for sub_url, html in list(subpage_data.items()):
         if len(results) >= 8:
             break
-        try:
-            print("  Unterseite: {}".format(sub_url))
-            # Unterseiten ohne Screenshot (spart Zeit)
-            sub_html, _ = fetch_html(sub_url, screenshot=False)
-            text = extract_text(sub_html)
-            if text and len(text) > 100:
-                results[sub_url] = text
-                # Tiefe 2
-                deep_candidates = find_relevant_links(sub_html, sub_url)
-                for deep_url in deep_candidates[:3]:
-                    if deep_url not in results and len(results) < 8:
-                        try:
-                            deep_html, _ = fetch_html(deep_url, screenshot=False)
-                            deep_text = extract_text(deep_html)
-                            if deep_text and len(deep_text) > 100:
-                                results[deep_url] = deep_text
-                                print("  Tiefe 2: {}".format(deep_url))
-                        except Exception:
-                            pass
-        except Exception as e:
-            print("  Fehler {}: {}".format(sub_url, e))
+        deep_candidates = find_relevant_links(html, sub_url)
+        for deep_url in deep_candidates[:2]:
+            if deep_url not in results and len(results) < 8:
+                try:
+                    deep_html = fetch_url(deep_url, timeout=6)
+                    deep_text = extract_text(deep_html)
+                    if deep_text and len(deep_text) > 100:
+                        results[deep_url] = deep_text
+                        print("  Tiefe 2: {}".format(deep_url))
+                except Exception:
+                    pass
 
-    # 3. Text zusammenfuehren
+    # 5. Text zusammenfuehren
     per_page_limit = max(800, 8000 // len(results))
     combined = []
     for page_url, text in results.items():
@@ -295,9 +235,7 @@ def fetch_website_deep(url):
         combined.append("=== {} ===\n{}".format(slug, text[:per_page_limit]))
     full_text = '\n\n'.join(combined)
     print("  Gesamt: {} Zeichen aus {} Seiten".format(len(full_text), len(results)))
-    return full_text, list(results.keys()), main_screenshot
-
-# ===================== HTTP HANDLER =====================
+    return full_text, list(results.keys())
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -314,14 +252,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == '/health':
-            self._json({'status': 'ok', 'playwright': USE_PLAYWRIGHT, 'cache': cache_stats()})
+            self._json({'status': 'ok', 'playwright': False, 'cache': cache_stats()})
             return
 
         if path == '/cache/stats':
             entries = []
             for e in sorted(cache.values(), key=lambda x: x['ts'], reverse=True):
                 age_h = round((time.time() - e['ts']) / 3600, 1)
-                entries.append({'url': e.get('url', '?'), 'age_h': age_h, 'valid': (age_h * 3600) < CACHE_TTL})
+                entries.append({'url': e.get('url', '?'), 'age_h': age_h,
+                                 'valid': (age_h * 3600) < CACHE_TTL})
             self._json({'stats': cache_stats(), 'entries': entries})
             return
 
@@ -329,38 +268,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             url_param = params.get('url', [''])[0]
             if url_param:
                 key = url_key(url_param)
-                removed = 1 if key in cache and cache.pop(key, None) else 0
+                removed = 1 if cache.pop(key, None) else 0
                 self._json({'ok': True, 'cleared': removed})
             else:
                 count = len(cache)
                 cache.clear()
                 print("  Cache geleert ({})".format(count))
                 self._json({'ok': True, 'cleared': count})
-            return
-
-        if path == '/screenshot':
-            url = params.get('url', [''])[0]
-            if not url:
-                self._json({'error': 'Kein URL'}, 400)
-                return
-            cached = cache_get(url)
-            if cached and cached.get('screenshot'):
-                self._json({'image': cached['screenshot'], 'ok': True, 'from_cache': True})
-                return
-            print("\n  Standalone-Screenshot: {}".format(url))
-            try:
-                _, img = fetch_html(url, screenshot=True)
-                if img:
-                    key = url_key(url)
-                    if key in cache:
-                        cache[key].setdefault('screenshots', [])
-                        if not any(s['url'] == url for s in cache[key]['screenshots']):
-                            cache[key]['screenshots'].insert(0, {'url': url, 'image': img, 'slug': 'startseite'})
-                    self._json({'image': img, 'ok': True, 'from_cache': False})
-                else:
-                    self._json({'ok': False, 'error': 'Screenshot fehlgeschlagen'})
-            except Exception as e:
-                self._json({'ok': False, 'error': str(e)})
             return
 
         if path != '/fetch':
@@ -374,29 +288,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({'error': 'Kein URL'}, 400)
             return
 
+        name_param    = params.get('name', [''])[0]
+        address_param = params.get('address', [''])[0]
+        gkey_param    = params.get('gkey', [''])[0]
+
         cached = cache_get(url)
         if cached:
             self._json({'text': cached['text'], 'pages': cached['pages'],
-                        'screenshots': cached.get('screenshots', []), 'reviews': cached.get('reviews'),
+                        'screenshots': [], 'reviews': cached.get('reviews'),
                         'ok': True, 'from_cache': True})
             return
 
-        name_param = params.get('name', [''])[0]
-        address_param = params.get('address', [''])[0]
-        gkey_param = params.get('gkey', [''])[0]
-
         print("\n  Fetche: {}".format(url))
         try:
-            text, pages, screenshots = fetch_website_deep(url)
-            # Google Reviews parallel holen
+            text, pages = fetch_website_deep(url)
             reviews = None
             if gkey_param and name_param:
                 reviews = fetch_google_reviews(name_param, address_param, gkey_param)
                 if reviews:
                     print("  Google: {} Sterne ({} Bewertungen)".format(
                         reviews.get('rating'), reviews.get('review_count')))
-            cache_set(url, {'text': text, 'pages': pages, 'screenshot': screenshot, 'reviews': reviews})
-            self._json({'text': text, 'pages': pages, 'screenshots': screenshots,
+            cache_set(url, {'text': text, 'pages': pages, 'reviews': reviews})
+            self._json({'text': text, 'pages': pages, 'screenshots': [],
                         'reviews': reviews, 'ok': True, 'from_cache': False})
         except Exception as e:
             print("  Fehler: {}".format(e))
@@ -418,6 +331,5 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     print("Somfy Proxy auf Port {}".format(PORT))
-    print("Playwright: {}".format(USE_PLAYWRIGHT))
     server = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
     server.serve_forever()
