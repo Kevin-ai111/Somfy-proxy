@@ -350,7 +350,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if img:
                     key = url_key(url)
                     if key in cache:
-                        cache[key]['screenshot'] = img
+                        cache[key].setdefault('screenshots', [])
+                        if not any(s['url'] == url for s in cache[key]['screenshots']):
+                            cache[key]['screenshots'].insert(0, {'url': url, 'image': img, 'slug': 'startseite'})
                     self._json({'image': img, 'ok': True, 'from_cache': False})
                 else:
                     self._json({'ok': False, 'error': 'Screenshot fehlgeschlagen'})
@@ -372,7 +374,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cached = cache_get(url)
         if cached:
             self._json({'text': cached['text'], 'pages': cached['pages'],
-                        'screenshot': cached.get('screenshot'), 'reviews': cached.get('reviews'),
+                        'screenshots': cached.get('screenshots', []), 'reviews': cached.get('reviews'),
                         'ok': True, 'from_cache': True})
             return
 
@@ -382,7 +384,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         print("\n  Fetche: {}".format(url))
         try:
-            text, pages, screenshot = fetch_website_deep(url)
+            text, pages, screenshots = fetch_website_deep(url)
             # Google Reviews parallel holen
             reviews = None
             if gkey_param and name_param:
@@ -391,7 +393,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     print("  Google: {} Sterne ({} Bewertungen)".format(
                         reviews.get('rating'), reviews.get('review_count')))
             cache_set(url, {'text': text, 'pages': pages, 'screenshot': screenshot, 'reviews': reviews})
-            self._json({'text': text, 'pages': pages, 'screenshot': screenshot,
+            self._json({'text': text, 'pages': pages, 'screenshots': screenshots,
                         'reviews': reviews, 'ok': True, 'from_cache': False})
         except Exception as e:
             print("  Fehler: {}".format(e))
