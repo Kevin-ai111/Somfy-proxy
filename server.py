@@ -208,7 +208,46 @@ def fetch_google_reviews(name, address, api_key):
         print("  Google Places Fehler: {}".format(e))
         return None
 
-def fetch_website_deep(url):
+SCREENSHOT_PRIORITY_SLUGS = [
+    'partner', 'partners', 'hersteller', 'marken', 'lieferant', 'lieferanten',
+    'kooperation', 'produkt', 'produkte', 'produktwelt', 'sortiment',
+    'antrieb', 'antriebe', 'steuerung', 'referenz', 'referenzen', 'marke',
+]
+
+def is_screenshot_worthy(url):
+    path = urllib.parse.urlparse(url).path.lower()
+    return any(s in path for s in SCREENSHOT_PRIORITY_SLUGS)
+
+def fetch_apiflash_screenshot(target_url, apiflash_key):
+    """Holt Screenshot via ApiFlash (echtes Chromium, rendert auch lazy Logos)."""
+    if not apiflash_key:
+        return None
+    try:
+        import base64
+        params = urllib.parse.urlencode({
+            'access_key': apiflash_key,
+            'url': target_url,
+            'format': 'png',
+            'width': 1280,
+            'height': 1400,
+            'fresh': 'true',
+            'wait_until': 'network_idle',
+            'response_type': 'image',
+        })
+        ss_url = "https://api.apiflash.com/v1/urltoimage?{}".format(params)
+        req = urllib.request.Request(ss_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            img_data = resp.read()
+            if len(img_data) < 1000:
+                return None
+            b64 = base64.b64encode(img_data).decode('utf-8')
+            print("  ApiFlash Screenshot: {} bytes von {}".format(len(img_data), target_url))
+            return b64
+    except Exception as e:
+        print("  ApiFlash Fehler: {}".format(e))
+        return None
+
+def fetch_website_deep(url, apiflash_key=None):
     if not url.startswith('http'):
         url = 'https://' + url
     results = {}
@@ -250,15 +289,33 @@ def fetch_website_deep(url):
                 except Exception:
                     pass
 
-    # 5. Text zusammenfuehren
+    # 5. Screenshot der besten Partner/Hersteller-Seite (max 1, via ApiFlash)
+    screenshots = []
+    if apiflash_key:
+        # Beste screenshot-worthy Seite finden (Partner/Hersteller bevorzugt)
+        ss_target = None
+        for page_url in results.keys():
+            if is_screenshot_worthy(page_url):
+                ss_target = page_url
+                break
+        # Fallback: Startseite
+        if not ss_target:
+            ss_target = url
+        img = fetch_apiflash_screenshot(ss_target, apiflash_key)
+        if img:
+            slug = urllib.parse.urlparse(ss_target).path.strip('/').split('/')[-1] or 'startseite'
+            screenshots.append({'url': ss_target, 'image': img, 'slug': slug})
+
+    # 6. Text zusammenfuehren
     per_page_limit = max(800, 8000 // len(results))
     combined = []
     for page_url, text in results.items():
         slug = urllib.parse.urlparse(page_url).path.strip('/') or 'startseite'
         combined.append("=== {} ===\n{}".format(slug, text[:per_page_limit]))
     full_text = '\n\n'.join(combined)
-    print("  Gesamt: {} Zeichen aus {} Seiten".format(len(full_text), len(results)))
-    return full_text, list(results.keys())
+    print("  Gesamt: {} Zeichen aus {} Seiten, {} Screenshots".format(
+        len(full_text), len(results), len(screenshots)))
+    return full_text, list(results.keys()), screenshots
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -314,25 +371,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         name_param      = params.get('name', [''])[0]
         address_param   = params.get('address', [''])[0]
         gkey_param      = params.get('gkey', [''])[0]
+        afkey_param     = params.get('afkey', [''])[0]
 
         cached = cache_get(url)
         if cached:
             self._json({'text': cached['text'], 'pages': cached['pages'],
-                        'screenshots': [], 'reviews': cached.get('reviews'),
+                        'screenshots': cached.get('screenshots', []), 'reviews': cached.get('reviews'),
                         'ok': True, 'from_cache': True})
             return
 
         print("\n  Fetche: {}".format(url))
         try:
-            text, pages = fetch_website_deep(url)
+            text, pages, screenshots = fetch_website_deep(url, apiflash_key=afkey_param)
             reviews = None
             if gkey_param and name_param:
                 reviews = fetch_google_reviews(name_param, address_param, gkey_param)
                 if reviews:
                     print("  Google: {} Sterne ({} Bewertungen)".format(
                         reviews.get('rating'), reviews.get('review_count')))
-            cache_set(url, {'text': text, 'pages': pages, 'reviews': reviews})
-            self._json({'text': text, 'pages': pages, 'screenshots': [],
+            cache_set(url, {'text': text, 'pages': pages, 'reviews': reviews, 'screenshots': screenshots})
+            self._json({'text': text, 'pages': pages, 'screenshots': screenshots,
                         'reviews': reviews, 'ok': True, 'from_cache': False})
         except Exception as e:
             print("  Fehler: {}".format(e))
