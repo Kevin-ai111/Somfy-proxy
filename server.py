@@ -74,9 +74,23 @@ def extract_text(html):
     text = re.sub(r'\n{4,}', '\n\n', text)
     return text.strip()
 
+# Seiten die besonders wahrscheinlich Mitarbeiterzahlen enthalten
+EMPLOYEE_SLUGS = [
+    'team', 'ueber-uns', 'ueber', 'uber-uns', 'about', 'about-us',
+    'unternehmen', 'firma', 'wir', 'wir-ueber-uns', 'wir-fuer-sie',
+    'portrait', 'profil', 'geschichte', 'mitarbeiter', 'jobs', 'karriere',
+    'impressum',
+]
+
 def score_link(path):
     path_lower = path.lower().rstrip('/')
     score = 0
+    # Mitarbeiter-relevante Seiten bekommen hohen Bonus
+    for slug in EMPLOYEE_SLUGS:
+        if slug in path_lower:
+            score += 20
+            break
+    # Sonstige relevante Seiten
     for slug in RELEVANT_SLUGS:
         if slug in path_lower:
             score += 10
