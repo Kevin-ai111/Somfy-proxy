@@ -170,77 +170,6 @@ def fetch_single(args):
         print("  Fehler {}: {}".format(sub_url, e))
     return sub_url, None, None
 
-def fetch_implisense(name, address, rapidapi_key):
-    """Sucht Firma bei Implisense und holt Finanzdaten falls verfuegbar."""
-    try:
-        # Schritt 1: Firma suchen (kostenlos ohne Key)
-        query = name.strip()
-        if address:
-            # PLZ extrahieren falls vorhanden
-            plz = ''.join(filter(str.isdigit, address.split()[0]))[:5] if address else ''
-            if plz:
-                query = "{} {}".format(name, plz)
-        lookup_url = "https://api.implisense.com/lookup/{}".format(
-            urllib.parse.quote(query)
-        )
-        req = urllib.request.Request(lookup_url, headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Accept': 'application/json'
-        })
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-
-        if not data or not isinstance(data, dict):
-            return None
-
-        company_id = data.get('id')
-        if not company_id:
-            return None
-
-        # Bilanzsumme direkt aus Lookup-Response holen falls vorhanden
-        financials = data.get('financials', {})
-        balance_sheet = financials.get('balanceSheetTotal')
-        balance_year = financials.get('year')
-
-        result = {
-            'id': company_id,
-            'name': data.get('name', ''),
-            'rechtsform': data.get('legalForm', ''),
-            'gruendung': data.get('foundingYear'),
-            'mitarbeiter_implisense': data.get('headCount'),
-            'bilanzsumme': balance_sheet,
-            'bilanzsumme_jahr': balance_year,
-            'umsatz': None,
-            'umsatz_jahr': None,
-        }
-
-        # Schritt 2: Finanzdaten mit Bearer Token (neue direkte API)
-        if rapidapi_key and company_id:
-            fin_url = "https://api.implisense.com/companies/{}/financials".format(company_id)
-            fin_req = urllib.request.Request(fin_url, headers={
-                'Authorization': 'Bearer {}'.format(rapidapi_key),
-                'Accept': 'application/json'
-            })
-            try:
-                with urllib.request.urlopen(fin_req, timeout=8) as fin_resp:
-                    fin_data = json.loads(fin_resp.read().decode('utf-8'))
-                entries = fin_data.get('financials', [])
-                if entries:
-                    latest = entries[0]
-                    result['umsatz'] = latest.get('revenue')
-                    result['umsatz_jahr'] = latest.get('year')
-                    print("  Implisense Finanzen: {}€ ({})".format(
-                        result['umsatz'], result['umsatz_jahr']))
-            except Exception as e:
-                print("  Implisense Finanzen Fehler: {}".format(e))
-
-        print("  Implisense: {} ({})".format(result['name'], company_id))
-        return result
-
-    except Exception as e:
-        print("  Implisense Fehler: {}".format(e))
-        return None
-
 def fetch_google_reviews(name, address, api_key):
     if not api_key:
         return None
@@ -371,13 +300,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         name_param      = params.get('name', [''])[0]
         address_param   = params.get('address', [''])[0]
         gkey_param      = params.get('gkey', [''])[0]
-        implisense_key  = params.get('ikey', [''])[0]
 
         cached = cache_get(url)
         if cached:
             self._json({'text': cached['text'], 'pages': cached['pages'],
                         'screenshots': [], 'reviews': cached.get('reviews'),
-                        'implisense': cached.get('implisense'),
                         'ok': True, 'from_cache': True})
             return
 
@@ -390,13 +317,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if reviews:
                     print("  Google: {} Sterne ({} Bewertungen)".format(
                         reviews.get('rating'), reviews.get('review_count')))
-            # Implisense immer versuchen (Lookup kostenlos)
-            implisense = None
-            if name_param:
-                implisense = fetch_implisense(name_param, address_param, implisense_key)
-            cache_set(url, {'text': text, 'pages': pages, 'reviews': reviews, 'implisense': implisense})
+            cache_set(url, {'text': text, 'pages': pages, 'reviews': reviews})
             self._json({'text': text, 'pages': pages, 'screenshots': [],
-                        'reviews': reviews, 'implisense': implisense, 'ok': True, 'from_cache': False})
+                        'reviews': reviews, 'ok': True, 'from_cache': False})
         except Exception as e:
             print("  Fehler: {}".format(e))
             self._json({'error': str(e), 'ok': False})
