@@ -179,6 +179,7 @@ def find_relevant_links(html, base_url):
 
 def playwright_fetch_page(url, screenshot=False):
     """Holt HTML und optional Screenshot per Playwright (echter Browser)."""
+    print("  [PW] Starte Playwright fuer: {} (screenshot={})".format(url, screenshot))
     with playwright_lock:
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -193,9 +194,11 @@ def playwright_fetch_page(url, screenshot=False):
             page = context.new_page()
             page.set_default_timeout(15000)
             try:
+                print("  [PW] Browser gestartet, lade Seite...")
                 page.goto(url, wait_until='domcontentloaded', timeout=15000)
                 # Kurz warten damit lazy-loaded Inhalte/Logos erscheinen
                 page.wait_for_timeout(2000)
+                print("  [PW] Seite geladen, extrahiere Content...")
                 html = page.content()
                 img_b64 = None
                 if screenshot:
@@ -298,7 +301,7 @@ def fetch_website_deep(url):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass
+        print("HTTP {} {}".format(args[0], args[1]))
 
     def do_OPTIONS(self):
         self.send_response(200)
