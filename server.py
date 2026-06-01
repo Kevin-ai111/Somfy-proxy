@@ -160,6 +160,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({'status': 'ok'})
             return
 
+        if parsed.path == '/screenshot':
+            url = params.get('url', [''])[0]
+            if not url:
+                self._json({'error': 'Kein URL'}, 400)
+                return
+            print(f"\n  Screenshot: {url}")
+            try:
+                import base64
+                # Verwende einen kostenlosen Screenshot-Service
+                ss_url = f"https://api.screenshotone.com/take?url={urllib.parse.quote(url)}&format=png&viewport_width=1280&viewport_height=900&image_quality=80&block_ads=true&block_cookie_banners=true&access_key=free"
+                req = urllib.request.Request(ss_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    img_data = resp.read()
+                    b64 = base64.b64encode(img_data).decode('utf-8')
+                    print(f"  ✓ Screenshot: {len(img_data)} bytes")
+                    self._json({'image': b64, 'ok': True})
+            except Exception as e:
+                print(f"  ✗ Screenshot Fehler: {e}")
+                self._json({'ok': False, 'error': str(e)})
+            return
+
         if parsed.path != '/fetch':
             self.send_response(404)
             self._cors()
