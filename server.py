@@ -198,12 +198,12 @@ def fetch_implisense(name, address, rapidapi_key):
             'umsatz_jahr': None,
         }
 
-        # Schritt 2: Finanzdaten nur mit RapidAPI Key
+        # Schritt 2: Finanzdaten mit Bearer Token (neue direkte API)
         if rapidapi_key and company_id:
-            fin_url = "https://german-company-financials.p.rapidapi.com/companies/{}/financials".format(company_id)
+            fin_url = "https://api.implisense.com/companies/{}/financials".format(company_id)
             fin_req = urllib.request.Request(fin_url, headers={
-                'x-rapidapi-key': rapidapi_key,
-                'x-rapidapi-host': 'german-company-financials.p.rapidapi.com'
+                'Authorization': 'Bearer {}'.format(rapidapi_key),
+                'Accept': 'application/json'
             })
             try:
                 with urllib.request.urlopen(fin_req, timeout=8) as fin_resp:
