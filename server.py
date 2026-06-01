@@ -82,10 +82,21 @@ EMPLOYEE_SLUGS = [
     'impressum',
 ]
 
+# Seiten mit Antrieben/Steuerung = höchste Priorität für Wettbewerber-Erkennung
+HIGH_VALUE_SLUGS = [
+    'smart-home', 'smarthome', 'steuerung', 'steuerungen', 'antrieb', 'antriebe',
+    'automation', 'partner', 'hersteller', 'marken',
+]
+
 def score_link(path):
     path_lower = path.lower().rstrip('/')
     score = 0
-    # Mitarbeiter-relevante Seiten bekommen hohen Bonus
+    # Smart-Home / Steuerung / Antriebe = höchste Prio (dort stehen Antriebshersteller)
+    for slug in HIGH_VALUE_SLUGS:
+        if slug in path_lower:
+            score += 30
+            break
+    # Mitarbeiter-relevante Seiten
     for slug in EMPLOYEE_SLUGS:
         if slug in path_lower:
             score += 20
@@ -142,7 +153,7 @@ def find_relevant_links(html, base_url):
             scored.append((s, full))
 
     scored.sort(key=lambda x: -x[0])
-    return [url for _, url in scored[:10]]
+    return [url for _, url in scored[:15]]
 
 def fetch_url(url, timeout=10):
     headers = {
@@ -282,7 +293,7 @@ def fetch_website_deep(url, apiflash_key=None):
 
     # 3. Unterseiten parallel per urllib
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        futures = list(ex.map(fetch_single, [(u, 8) for u in candidates[:8]]))
+        futures = list(ex.map(fetch_single, [(u, 8) for u in candidates[:12]]))
 
     subpage_data = {}
     for sub_url, html, text in futures:
@@ -293,7 +304,7 @@ def fetch_website_deep(url, apiflash_key=None):
 
     # 4. Tiefe 2
     for sub_url, html in list(subpage_data.items()):
-        if len(results) >= 8:
+        if len(results) >= 10:
             break
         deep_candidates = find_relevant_links(html, sub_url)
         for deep_url in deep_candidates[:2]:
