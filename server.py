@@ -209,14 +209,32 @@ def fetch_google_reviews(name, address, api_key):
         return None
 
 SCREENSHOT_PRIORITY_SLUGS = [
-    'partner', 'partners', 'hersteller', 'marken', 'lieferant', 'lieferanten',
-    'kooperation', 'produkt', 'produkte', 'produktwelt', 'sortiment',
-    'antrieb', 'antriebe', 'steuerung', 'referenz', 'referenzen', 'marke',
+    'partner', 'hersteller', 'marken', 'marke', 'lieferant',
+    'kooperation', 'produkt', 'sortiment',
+    'antrieb', 'steuerung', 'steuerungen', 'referenz',
+    'smart-home', 'smarthome', 'smart', 'somfy',
+    'rollladen', 'rolladen', 'markise', 'jalousie', 'raffstore', 'sonnenschutz',
 ]
 
-def is_screenshot_worthy(url):
+def screenshot_score(url):
+    """Hoeherer Score = wahrscheinlicher Logos/Marken. Somfy/Partner/Hersteller ganz oben."""
     path = urllib.parse.urlparse(url).path.lower()
-    return any(s in path for s in SCREENSHOT_PRIORITY_SLUGS)
+    top = ['somfy', 'partner', 'hersteller', 'marken', 'marke', 'lieferant', 'steuerung', 'smart-home', 'smarthome', 'antrieb']
+    mid = ['produkt', 'sortiment', 'kooperation']
+    low = ['rollladen', 'rolladen', 'markise', 'jalousie', 'raffstore', 'sonnenschutz', 'referenz']
+    for s in top:
+        if s in path:
+            return 3
+    for s in mid:
+        if s in path:
+            return 2
+    for s in low:
+        if s in path:
+            return 1
+    return 0
+
+def is_screenshot_worthy(url):
+    return screenshot_score(url) > 0
 
 def fetch_apiflash_screenshot(target_url, apiflash_key):
     """Holt Screenshot via ApiFlash (echtes Chromium, rendert auch lazy Logos)."""
@@ -289,22 +307,31 @@ def fetch_website_deep(url, apiflash_key=None):
                 except Exception:
                     pass
 
-    # 5. Screenshot der besten Partner/Hersteller-Seite (max 1, via ApiFlash)
+    # 5. Screenshot der besten Partner/Hersteller-Seite (bis zu 2, via ApiFlash)
     screenshots = []
     if apiflash_key:
-        # Beste screenshot-worthy Seite finden (Partner/Hersteller bevorzugt)
-        ss_target = None
-        for page_url in results.keys():
-            if is_screenshot_worthy(page_url):
-                ss_target = page_url
-                break
-        # Fallback: Startseite
-        if not ss_target:
-            ss_target = url
-        img = fetch_apiflash_screenshot(ss_target, apiflash_key)
-        if img:
-            slug = urllib.parse.urlparse(ss_target).path.strip('/').split('/')[-1] or 'startseite'
-            screenshots.append({'url': ss_target, 'image': img, 'slug': slug})
+        # Alle Seiten nach Screenshot-Score sortieren
+        scored_pages = [(screenshot_score(p), p) for p in results.keys()]
+        scored_pages = [(s, p) for s, p in scored_pages if s > 0]
+        scored_pages.sort(key=lambda x: -x[0])
+
+        # Falls gar keine relevante Seite gecrawlt: gezielt typische Pfade probieren
+        if not scored_pages:
+            base = urllib.parse.urlparse(url)
+            base_origin = "{}://{}".format(base.scheme, base.netloc)
+            for guess in ['/steuerungen/', '/produkte/', '/partner/', '/smart-home/']:
+                scored_pages.append((1, base_origin + guess))
+
+        # Top-2 screenshoten
+        targets = [p for _, p in scored_pages[:2]] if scored_pages else [url]
+        if not targets:
+            targets = [url]
+
+        for ss_target in targets:
+            img = fetch_apiflash_screenshot(ss_target, apiflash_key)
+            if img:
+                slug = urllib.parse.urlparse(ss_target).path.strip('/').split('/')[-1] or 'startseite'
+                screenshots.append({'url': ss_target, 'image': img, 'slug': slug})
 
     # 6. Text zusammenfuehren
     per_page_limit = max(800, 8000 // len(results))
