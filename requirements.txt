@@ -1,1 +1,11 @@
-beautifulsoup4==4.12.3
+{
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "startCommand": "python server.py",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 120
+  }
+}
