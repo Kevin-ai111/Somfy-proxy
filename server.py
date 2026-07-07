@@ -318,22 +318,51 @@ def fetch_website_deep(url, apiflash_key=None):
                 except Exception:
                     pass
 
-    # 5. Screenshot via ApiFlash: nur die beste Partner/Hersteller-Seite (Logos)
+    # 5. Screenshot via ApiFlash: STRENGE Auswahl
+    #    Nur wenn (a) relevante Seite UND (b) Marken-Signale im Text
     screenshots = []
     if apiflash_key:
-        base = urllib.parse.urlparse(url)
-        base_origin = "{}://{}".format(base.scheme, base.netloc)
-        scored_pages = [(screenshot_score(p), p) for p in results.keys()]
-        scored_pages = [(s, p) for s, p in scored_pages if s > 0]
-        scored_pages.sort(key=lambda x: -x[0])
-        if not scored_pages:
-            for guess in ['/steuerungen/', '/produkte/', '/partner/', '/smart-home/']:
-                scored_pages.append((1, base_origin + guess))
-        logo_target = scored_pages[0][1] if scored_pages else url
-        img = fetch_apiflash_screenshot(logo_target, apiflash_key)
-        if img:
-            slug = urllib.parse.urlparse(logo_target).path.strip('/').split('/')[-1] or 'startseite'
-            screenshots.append({'url': logo_target, 'image': img, 'slug': slug, 'kind': 'logo'})
+        # Bekannte Marken/Hersteller die auf Logos erscheinen
+        BRAND_SIGNALS = [
+            'somfy', 'becker', 'elero', 'warema', 'rademacher', 'selve', 'gira',
+            'griesser', 'weinor', 'markilux', 'roma', 'schellenberg', 'lux-z',
+            'coulisse', 'hunter douglas', 'verosol', 'hörmann', 'hoermann',
+            'sommer', 'novoferm', 'marantec', 'velux', 'heroal', 'schüco', 'schueco',
+            'kömmerling', 'koemmerling', 'rehau', 'internorm', 'aluprof',
+            'partner', 'hersteller', 'markenpartner', 'premiumpartner',
+            'fachpartner', 'vertragspartner', 'lieferant', 'marken',
+            'io-homecontrol', 'io homecontrol', 'tahoma', 'connexoon',
+        ]
+
+        def brand_signal_count(text):
+            t = text.lower()
+            return sum(1 for b in BRAND_SIGNALS if b in t)
+
+        # Kandidaten: nur Seiten mit screenshot_score > 0 (Partner/Hersteller/Antrieb/Smart-Home/Produkt)
+        candidates_ss = []
+        for page_url, text in results.items():
+            sc = screenshot_score(page_url)
+            if sc == 0:
+                continue
+            signals = brand_signal_count(text)
+            # Strenge Regel: Score >= 2 (echte Partner/Hersteller/Antriebsseite)
+            #   ODER mindestens 2 Markennamen im Text
+            if sc >= 2 or signals >= 2:
+                # Kombinierter Rang: Seiten-Score + Anzahl Marken-Signale
+                rank = sc * 10 + signals
+                candidates_ss.append((rank, signals, page_url))
+
+        candidates_ss.sort(key=lambda x: -x[0])
+
+        if candidates_ss:
+            rank, signals, ss_target = candidates_ss[0]
+            slug = urllib.parse.urlparse(ss_target).path.strip('/').split('/')[-1] or 'startseite'
+            print("  Screenshot-Auswahl: {} (rank={}, {} Marken-Signale)".format(slug, rank, signals))
+            img = fetch_apiflash_screenshot(ss_target, apiflash_key)
+            if img:
+                screenshots.append({'url': ss_target, 'image': img, 'slug': slug, 'kind': 'logo', 'signals': signals})
+        else:
+            print("  Kein Screenshot: keine Seite mit ausreichenden Marken-Signalen")
 
     # 6. Text zusammenfuehren - Team/Über-uns-Seiten bekommen mehr Platz
     team_slugs = ['team', 'ueber', 'uber-uns', 'uber', 'about', 'ansprechpartner',
