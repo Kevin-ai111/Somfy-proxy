@@ -258,14 +258,19 @@ def fetch_apiflash_screenshot(target_url, apiflash_key):
             'url': target_url,
             'format': 'png',
             'width': 1280,
-            'height': 1400,
+            'full_page': 'true',
+            'scroll_page': 'true',
+            'full_page_max_height': 4000,
+            'no_cookie_banners': 'true',
+            'no_ads': 'true',
             'fresh': 'true',
             'wait_until': 'network_idle',
+            'delay': 2,
             'response_type': 'image',
         })
         ss_url = "https://api.apiflash.com/v1/urltoimage?{}".format(params)
         req = urllib.request.Request(ss_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=40) as resp:
             img_data = resp.read()
             if len(img_data) < 1000:
                 return None
