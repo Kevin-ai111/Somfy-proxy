@@ -85,17 +85,25 @@ EMPLOYEE_SLUGS = [
 # Seiten mit Antrieben/Steuerung = höchste Priorität für Wettbewerber-Erkennung
 HIGH_VALUE_SLUGS = [
     'smart-home', 'smarthome', 'steuerung', 'steuerungen', 'antrieb', 'antriebe',
-    'automation', 'partner', 'hersteller', 'marken',
+    'automation', 'partner', 'partners', 'hersteller', 'marken', 'marke',
+    'lieferant', 'lieferanten', 'markenpartner', 'premiumpartner', 'fachpartner',
+    'referenzen', 'referenz', 'produkte', 'produkt', 'sortiment',
 ]
 
 def score_link(path):
     path_lower = path.lower().rstrip('/')
     score = 0
-    # Smart-Home / Steuerung / Antriebe = höchste Prio (dort stehen Antriebshersteller)
-    for slug in HIGH_VALUE_SLUGS:
+    # Marken-/Partner-/Hersteller-Seiten = ALLERHÖCHSTE Prio (dort stehen die Lieferanten-Logos)
+    for slug in ['partner', 'hersteller', 'marken', 'marke', 'lieferant', 'markenpartner', 'premiumpartner', 'fachpartner']:
         if slug in path_lower:
-            score += 30
+            score += 45
             break
+    else:
+        # Smart-Home / Steuerung / Antriebe = hohe Prio (dort stehen Antriebshersteller)
+        for slug in HIGH_VALUE_SLUGS:
+            if slug in path_lower:
+                score += 30
+                break
     # Mitarbeiter-relevante Seiten
     for slug in EMPLOYEE_SLUGS:
         if slug in path_lower:
@@ -302,18 +310,18 @@ def fetch_website_deep(url, apiflash_key=None):
 
     subpage_data = {}
     for sub_url, html, text in futures:
-        if text and len(results) < 8:
+        if text and len(results) < 10:
             results[sub_url] = text
             if html:
                 subpage_data[sub_url] = html
 
     # 4. Tiefe 2
     for sub_url, html in list(subpage_data.items()):
-        if len(results) >= 10:
+        if len(results) >= 12:
             break
         deep_candidates = find_relevant_links(html, sub_url)
         for deep_url in deep_candidates[:2]:
-            if deep_url not in results and len(results) < 8:
+            if deep_url not in results and len(results) < 10:
                 try:
                     deep_html = fetch_url(deep_url, timeout=6)
                     deep_text = extract_text(deep_html)
@@ -323,17 +331,23 @@ def fetch_website_deep(url, apiflash_key=None):
                 except Exception:
                     pass
 
-    # 5. Screenshot via ApiFlash: STRENGE Auswahl
-    #    Nur wenn (a) relevante Seite UND (b) Marken-Signale im Text
+    # 5. Screenshot via ApiFlash: Auswahl optimiert für bessere Logo-Erkennung
+    #    Auslösen wenn (a) Seite nach Partner/Marken/Hersteller aussieht (hoher Slug-Score)
+    #    ODER (b) Marken-Signale im Text. Bis zu 3 Seiten werden fotografiert.
     screenshots = []
     if apiflash_key:
         # Bekannte Marken/Hersteller die auf Logos erscheinen
         BRAND_SIGNALS = [
-            'somfy', 'becker', 'elero', 'warema', 'rademacher', 'selve', 'gira',
+            'somfy', 'becker', 'elero', 'warema', 'rademacher', 'selve', 'gira', 'nice',
             'griesser', 'weinor', 'markilux', 'roma', 'schellenberg', 'lux-z',
             'coulisse', 'hunter douglas', 'verosol', 'hörmann', 'hoermann',
             'sommer', 'novoferm', 'marantec', 'velux', 'heroal', 'schüco', 'schueco',
             'kömmerling', 'koemmerling', 'rehau', 'internorm', 'aluprof',
+            'alukon', 'alulux', 'hella', 'reflexa', 'lakal', 'beck&heun', 'beck & heun',
+            'duotherm', 'schlotterer', 'renson', 'wo&wo', 'valetta', 'bubendorff',
+            'winsol', 'selt', 'isotra', 'servis climax', 'rufalex', 'lewens', 'erhardt',
+            'leiner', 'klaiber', 'stobag', 'mhz', 'kadeco', 'varisol', 'nova hüppe',
+            'brustor', 'gibus', 'corradi', 'pratic',
             'partner', 'hersteller', 'markenpartner', 'premiumpartner',
             'fachpartner', 'vertragspartner', 'lieferant', 'marken',
             'io-homecontrol', 'io homecontrol', 'tahoma', 'connexoon',
@@ -343,31 +357,37 @@ def fetch_website_deep(url, apiflash_key=None):
             t = text.lower()
             return sum(1 for b in BRAND_SIGNALS if b in t)
 
-        # Kandidaten: nur Seiten mit screenshot_score > 0 (Partner/Hersteller/Antrieb/Smart-Home/Produkt)
+        # Kandidaten sammeln: Seiten mit screenshot_score > 0
         candidates_ss = []
         for page_url, text in results.items():
             sc = screenshot_score(page_url)
             if sc == 0:
                 continue
             signals = brand_signal_count(text)
-            # Strenge Regel: Score >= 2 (echte Partner/Hersteller/Antriebsseite)
-            #   ODER mindestens 2 Markennamen im Text
-            if sc >= 2 or signals >= 2:
-                # Kombinierter Rang: Seiten-Score + Anzahl Marken-Signale
+            # Gelockerte Regel: hoher Seiten-Score (Partner/Marken/Hersteller-Seite) löst
+            #   ALLEIN aus (dort stehen Logos oft ohne Fließtext), ODER >=1 Markensignal.
+            if sc >= 2 or signals >= 1:
                 rank = sc * 10 + signals
                 candidates_ss.append((rank, signals, page_url))
 
         candidates_ss.sort(key=lambda x: -x[0])
 
-        if candidates_ss:
-            rank, signals, ss_target = candidates_ss[0]
+        # Bis zu 3 beste Seiten fotografieren (mehr Chancen das richtige Logo zu erwischen)
+        MAX_SCREENSHOTS = 3
+        seen_slugs = set()
+        for rank, signals, ss_target in candidates_ss:
+            if len(screenshots) >= MAX_SCREENSHOTS:
+                break
             slug = urllib.parse.urlparse(ss_target).path.strip('/').split('/')[-1] or 'startseite'
+            if slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
             print("  Screenshot-Auswahl: {} (rank={}, {} Marken-Signale)".format(slug, rank, signals))
             img = fetch_apiflash_screenshot(ss_target, apiflash_key)
             if img:
                 screenshots.append({'url': ss_target, 'image': img, 'slug': slug, 'kind': 'logo', 'signals': signals})
-        else:
-            print("  Kein Screenshot: keine Seite mit ausreichenden Marken-Signalen")
+        if not screenshots:
+            print("  Kein Screenshot: keine relevante Seite gefunden")
 
     # 6. Text zusammenfuehren - Team/Über-uns-Seiten bekommen mehr Platz
     team_slugs = ['team', 'ueber', 'uber-uns', 'uber', 'about', 'ansprechpartner',
