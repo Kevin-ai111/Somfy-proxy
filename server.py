@@ -93,21 +93,22 @@ HIGH_VALUE_SLUGS = [
 def score_link(path):
     path_lower = path.lower().rstrip('/')
     score = 0
-    # Marken-/Partner-/Hersteller-Seiten = ALLERHÖCHSTE Prio (dort stehen die Lieferanten-Logos)
+    # Marken-/Partner-/Hersteller-/Lieferanten-Seiten = ALLERHÖCHSTE Prio
+    # (dort stehen die Lieferanten – das einzige was uns jetzt noch interessiert)
     for slug in ['partner', 'hersteller', 'marken', 'marke', 'lieferant', 'markenpartner', 'premiumpartner', 'fachpartner']:
         if slug in path_lower:
-            score += 45
+            score += 50
             break
     else:
-        # Smart-Home / Steuerung / Antriebe = hohe Prio (dort stehen Antriebshersteller)
+        # Produkt-/Sortiment-/Branchenseiten = hohe Prio (dort steht Branche + verbaute Marken)
         for slug in HIGH_VALUE_SLUGS:
             if slug in path_lower:
-                score += 30
+                score += 35
                 break
-    # Mitarbeiter-relevante Seiten
+    # Mitarbeiter-/Team-Seiten: nur noch minimal relevant (MA-Zahl brauchen wir nicht mehr)
     for slug in EMPLOYEE_SLUGS:
         if slug in path_lower:
-            score += 20
+            score += 3
             break
     # Sonstige relevante Seiten
     for slug in RELEVANT_SLUGS:
@@ -236,11 +237,12 @@ SCREENSHOT_PRIORITY_SLUGS = [
 ]
 
 def screenshot_score(url):
-    """Hoeherer Score = wahrscheinlicher Logos/Marken. Somfy/Partner/Hersteller ganz oben."""
+    """Hoeherer Score = wahrscheinlicher Logos/Marken. Partner/Hersteller/Lieferanten ganz oben."""
     path = urllib.parse.urlparse(url).path.lower()
-    top = ['somfy', 'partner', 'hersteller', 'marken', 'marke', 'lieferant', 'steuerung', 'smart-home', 'smarthome', 'antrieb']
-    mid = ['produkt', 'sortiment', 'kooperation']
-    low = ['rollladen', 'rolladen', 'markise', 'jalousie', 'raffstore', 'sonnenschutz', 'referenz']
+    top = ['somfy', 'partner', 'hersteller', 'marken', 'marke', 'lieferant', 'markenpartner', 'premiumpartner', 'fachpartner', 'steuerung', 'smart-home', 'smarthome', 'antrieb']
+    mid = ['produkt', 'sortiment', 'kooperation', 'referenz']
+    low = ['rollladen', 'rolladen', 'markise', 'jalousie', 'raffstore', 'screen', 'sonnenschutz',
+           'wintergarten', 'pergola', 'lamellendach', 'beschattung', 'terrassendach']
     for s in top:
         if s in path:
             return 3
@@ -389,20 +391,20 @@ def fetch_website_deep(url, apiflash_key=None):
         if not screenshots:
             print("  Kein Screenshot: keine relevante Seite gefunden")
 
-    # 6. Text zusammenfuehren - Team/Über-uns-Seiten bekommen mehr Platz
-    team_slugs = ['team', 'ueber', 'uber-uns', 'uber', 'about', 'ansprechpartner',
-                  'mitarbeiter', 'unternehmen', 'wir', 'firma', 'karriere', 'jobs', 'impressum']
-    def is_team_page(page_url):
+    # 6. Text zusammenfuehren - Marken/Partner-Seiten bekommen mehr Platz
+    def is_brand_page(page_url):
+        # Partner-/Marken-/Hersteller-/Lieferanten-Seiten – hier stehen die Lieferanten
+        brand_slugs = ['partner', 'hersteller', 'marken', 'marke', 'lieferant', 'markenpartner', 'premiumpartner', 'fachpartner', 'produkt', 'sortiment']
         path = urllib.parse.urlparse(page_url).path.lower()
-        return any(t in path for t in team_slugs)
+        return any(b in path for b in brand_slugs)
 
     base_limit = max(800, 7000 // len(results))
     combined = []
     for page_url, text in results.items():
         slug = urllib.parse.urlparse(page_url).path.strip('/') or 'startseite'
-        # Team-Seiten: doppeltes Limit, damit Mitarbeiterinfos nicht abgeschnitten werden
-        limit = base_limit * 2 if is_team_page(page_url) else base_limit
-        marker = " [TEAM/MITARBEITER-SEITE]" if is_team_page(page_url) else ""
+        # Marken-/Partner-Seiten: doppeltes Limit, damit keine Lieferanten-Namen abgeschnitten werden
+        limit = base_limit * 2 if is_brand_page(page_url) else base_limit
+        marker = " [MARKEN/PARTNER-SEITE]" if is_brand_page(page_url) else ""
         combined.append("=== {}{} ===\n{}".format(slug, marker, text[:limit]))
     full_text = '\n\n'.join(combined)
     print("  Gesamt: {} Zeichen aus {} Seiten, {} Screenshots".format(
