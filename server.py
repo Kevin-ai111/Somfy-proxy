@@ -359,9 +359,23 @@ def fetch_website_deep(url, apiflash_key=None):
             t = text.lower()
             return sum(1 for b in BRAND_SIGNALS if b in t)
 
+        # Seiten die NIE fotografiert werden (Personen/Kontakt/Team – irrelevant für Lieferanten,
+        # und datenschutzrechtlich heikel wegen Personenfotos). Wichtig: "ansprechpartner"
+        # enthaelt "partner" und wuerde sonst faelschlich als Marken-Seite durchgehen.
+        SCREENSHOT_BLOCK = [
+            'ansprechpartner', 'kontakt', 'contact', 'team', 'ueber-uns', 'ueber',
+            'uber-uns', 'about', 'mitarbeiter', 'karriere', 'jobs', 'impressum',
+            'datenschutz', 'anfahrt',
+        ]
+        def is_blocked_for_screenshot(url):
+            path = urllib.parse.urlparse(url).path.lower()
+            return any(b in path for b in SCREENSHOT_BLOCK)
+
         # Kandidaten sammeln: Seiten mit screenshot_score > 0
         candidates_ss = []
         for page_url, text in results.items():
+            if is_blocked_for_screenshot(page_url):
+                continue
             sc = screenshot_score(page_url)
             if sc == 0:
                 continue
