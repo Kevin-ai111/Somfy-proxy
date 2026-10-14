@@ -36,8 +36,19 @@ RELEVANT_SLUGS = [
     'tor', 'tore', 'garagentor', 'sektionaltor', 'carport',
 ]
 
+def normalize_url(url):
+    # Gleiche Website = gleicher Cache-Eintrag, egal ob http/https, mit/ohne www, mit/ohne "/" am Ende
+    u = url.strip().lower()
+    for prefix in ('https://', 'http://'):
+        if u.startswith(prefix):
+            u = u[len(prefix):]
+            break
+    if u.startswith('www.'):
+        u = u[4:]
+    return u.rstrip('/')
+
 def url_key(url):
-    return hashlib.md5(url.strip().lower().encode()).hexdigest()
+    return hashlib.md5(normalize_url(url).encode()).hexdigest()
 
 def cache_get(url):
     key = url_key(url)
