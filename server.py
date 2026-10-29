@@ -93,7 +93,7 @@ def extract_logo_hints(html):
         if k not in seen:
             seen.add(k)
             out.append(h)
-    return out[:60]
+    return out[:200]
 
 def extract_text(html):
     logo_hints = extract_logo_hints(html)
@@ -110,7 +110,8 @@ def extract_text(html):
     text = re.sub(r'[ \t]{3,}', ' ', text)
     text = re.sub(r'\n{4,}', '\n\n', text)
     if logo_hints:
-        text = text.strip() + '\n[Bilder/Logos auf der Seite: ' + ' | '.join(logo_hints) + ']'
+        # Jeder Bildtext eine eigene Zeile -> landet gezielt in den MARKEN-FUNDSTELLEN
+        text = text.strip() + '\n' + '\n'.join('[Logo/Bild] ' + h for h in logo_hints)
     return text.strip()
 
 # Alle Marken, nach denen gezielt gesucht wird (Text + Logo-Hinweise)
@@ -130,6 +131,7 @@ KNOWN_BRANDS = [
     'aluplast', 'internorm', 'pirnar', 'hörmann', 'hoermann', 'teckentrup', 'tacke',
     'novoferm', 'sommer', 'marantec', 'velux', 'roto', 'meesenburg', 'nüßing', 'nuessing',
     'aldra', 'kneer', 'südfenster', 'blösch', 'bloesch', 'wicona', 'hueck', 'jansen', 'forster',
+    'ryterna', 'gugelfuss', 'lämmermann', 'laemmermann', 'neher',
 ]
 
 def brand_lines(text, max_chars=2500):
@@ -141,6 +143,13 @@ def brand_lines(text, max_chars=2500):
         if not l or len(l) > 400:
             continue
         low = l.lower()
+        # Logo-Bilder mit 'Logo'/'Partner' im Bildtext immer aufnehmen (auch unbekannte Marken)
+        if low.startswith('[logo/bild]') and ('logo' in low[11:] or 'partner' in low[11:]):
+            out.append(l)
+            total += len(l)
+            if total > max_chars:
+                break
+            continue
         if any(re.search(r'(?<![a-zäöü])' + re.escape(b) + r'(?![a-zäöü])', low) for b in KNOWN_BRANDS) \
            or (('partner' in low and 'ansprechpartner' not in low) or 'hersteller' in low or 'lieferant' in low) and len(l) > 20:
             out.append(l)
@@ -506,7 +515,7 @@ def fetch_website_deep(url, apiflash_key=None):
     fund = []
     for page_url, text in results.items():
         slug = urllib.parse.urlparse(page_url).path.strip('/') or 'startseite'
-        for l in brand_lines(text, 800):
+        for l in brand_lines(text, 1200):
             fund.append('[{}] {}'.format(slug, l))
     combined = []
     if fund:
