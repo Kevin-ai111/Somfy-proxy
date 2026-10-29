@@ -70,7 +70,33 @@ def cache_stats():
     valid = sum(1 for e in cache.values() if (time.time() - e['ts']) < CACHE_TTL)
     return {'total': total, 'valid': valid, 'expired': total - valid}
 
+def extract_logo_hints(html):
+    """Marken stehen oft nur als Logo-Bild auf der Seite. Der Bildtext (alt/title) und
+    der Dateiname (z.B. 'logo-roma.png') verraten sie trotzdem."""
+    hints = []
+    for m in re.finditer(r'<img\b[^>]*>', html, re.I):
+        tag = m.group(0)
+        for attr in ('alt', 'title'):
+            a = re.search(attr + r'\s*=\s*["\']([^"\']{2,80})["\']', tag, re.I)
+            if a:
+                hints.append(a.group(1).strip())
+        s = re.search(r'(?:src|data-src)\s*=\s*["\']([^"\']+)["\']', tag, re.I)
+        if s:
+            fname = urllib.parse.unquote(s.group(1).split('?')[0].rsplit('/', 1)[-1])
+            fname = re.sub(r'\.(png|jpe?g|gif|svg|webp)$', '', fname, flags=re.I)
+            fname = re.sub(r'[-_]+', ' ', fname).strip()
+            if 2 < len(fname) < 60 and not re.fullmatch(r'[\d\sx]+', fname):
+                hints.append(fname)
+    seen, out = set(), []
+    for h in hints:
+        k = h.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(h)
+    return out[:60]
+
 def extract_text(html):
+    logo_hints = extract_logo_hints(html)
     if USE_BS4:
         soup = BeautifulSoup(html, 'html.parser')
         for tag in soup(['script', 'style', 'noscript', 'meta', 'link']):
@@ -83,7 +109,45 @@ def extract_text(html):
         text = re.sub(r'&[a-zA-Z#0-9]+;', ' ', text)
     text = re.sub(r'[ \t]{3,}', ' ', text)
     text = re.sub(r'\n{4,}', '\n\n', text)
+    if logo_hints:
+        text = text.strip() + '\n[Bilder/Logos auf der Seite: ' + ' | '.join(logo_hints) + ']'
     return text.strip()
+
+# Alle Marken, nach denen gezielt gesucht wird (Text + Logo-Hinweise)
+KNOWN_BRANDS = [
+    # Sonnenschutz-/Rollladen-OEM
+    'roma', 'warema', 'alukon', 'alulux', 'hella', 'reflexa', 'lakal', 'heroal', 'beck&heun',
+    'beck & heun', 'beck+heun', 'duotherm', 'griesser', 'schlotterer', 'renson', 'wo&wo',
+    'valetta', 'bubendorff', 'winsol', 'selt', 'isotra', 'servis climax', 'aluprof', 'rufalex',
+    'markilux', 'weinor', 'lewens', 'erhardt', 'leiner', 'klaiber', 'stobag', 'mhz', 'kadeco',
+    'varisol', 'nova hüppe', 'nova hueppe', 'brustor', 'gibus', 'corradi', 'pratic',
+    'rollcom', 'solarlux', 'obuk',
+    # Antriebe / Steuerung
+    'somfy', 'tahoma', 'io-homecontrol', 'connexoon', 'becker', 'elero', 'rademacher', 'selve',
+    'nice', 'gira', 'schellenberg',
+    # Fenster / Türen / Tore / Beschläge
+    'schüco', 'schueco', 'kömmerling', 'koemmerling', 'salamander', 'veka', 'gealan', 'rehau',
+    'aluplast', 'internorm', 'pirnar', 'hörmann', 'hoermann', 'teckentrup', 'tacke',
+    'novoferm', 'sommer', 'marantec', 'velux', 'roto', 'meesenburg', 'nüßing', 'nuessing',
+    'aldra', 'kneer', 'südfenster', 'blösch', 'bloesch', 'wicona', 'hueck', 'jansen', 'forster',
+]
+
+def brand_lines(text, max_chars=2500):
+    """Alle Zeilen, in denen eine bekannte Marke oder 'Partner/Hersteller' vorkommt.
+    Damit gehen Markennamen nicht verloren, wenn der Seitentext gekuerzt wird."""
+    out, total = [], 0
+    for line in text.split('\n'):
+        l = line.strip()
+        if not l or len(l) > 400:
+            continue
+        low = l.lower()
+        if any(re.search(r'(?<![a-zäöü])' + re.escape(b) + r'(?![a-zäöü])', low) for b in KNOWN_BRANDS) \
+           or (('partner' in low and 'ansprechpartner' not in low) or 'hersteller' in low or 'lieferant' in low) and len(l) > 20:
+            out.append(l)
+            total += len(l)
+            if total > max_chars:
+                break
+    return out
 
 # Seiten die besonders wahrscheinlich Mitarbeiterzahlen enthalten
 EMPLOYEE_SLUGS = [
@@ -99,15 +163,27 @@ HIGH_VALUE_SLUGS = [
     'automation', 'partner', 'partners', 'hersteller', 'marken', 'marke',
     'lieferant', 'lieferanten', 'markenpartner', 'premiumpartner', 'fachpartner',
     'referenzen', 'referenz', 'produkte', 'produkt', 'sortiment',
+    # Aus der Auswertung 21.10.: hier standen die uebersehenen Marken
+    'leistung', 'fenster', 'tuer', 'tore', 'rollladen', 'rolladen', 'rolllaeden', 'rollaeden',
+    'sonnenschutz', 'markise', 'jalousie', 'raffstore', 'beschattung', 'funk', 'solar',
+    'insektenschutz', 'terrassendach', 'wintergarten', 'pergola', 'kunststofffenster',
 ]
 
+def norm_path(path):
+    """Pfad vergleichbar machen: Kleinschreibung, %-Kodierung aufloesen, Umlaute ausschreiben."""
+    p = urllib.parse.unquote(path).lower().rstrip('/')
+    for a, b in (('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss')):
+        p = p.replace(a, b)
+    return p
+
 def score_link(path):
-    path_lower = path.lower().rstrip('/')
+    # 'ansprechpartner' enthaelt 'partner' -> sonst faelschlich als Marken-Seite gewertet
+    path_lower = norm_path(path).replace('ansprechpartner', 'kontaktperson')
     score = 0
     # Marken-/Partner-/Hersteller-/Lieferanten-Seiten = ALLERHÖCHSTE Prio
     # (dort stehen die Lieferanten – das einzige was uns jetzt noch interessiert)
     for slug in ['partner', 'hersteller', 'marken', 'marke', 'lieferant', 'markenpartner', 'premiumpartner', 'fachpartner']:
-        if slug in path_lower:
+        if slug in path_lower and 'ansprechpartner' not in path_lower:
             score += 50
             break
     else:
@@ -128,6 +204,12 @@ def score_link(path):
             break
     score -= path_lower.count('/')
     return score
+
+def site_domain(netloc):
+    """'www.shop.firma.de:443' -> 'firma.de' (www und Subdomains zaehlen zur selben Firma)"""
+    host = netloc.lower().split(':')[0]
+    parts = host.split('.')
+    return '.'.join(parts[-2:]) if len(parts) >= 2 else host
 
 def find_relevant_links(html, base_url):
     base = urllib.parse.urlparse(base_url)
@@ -162,7 +244,7 @@ def find_relevant_links(html, base_url):
         else:
             full = base_origin + '/' + href
         parsed = urllib.parse.urlparse(full)
-        if parsed.netloc != base.netloc:
+        if site_domain(parsed.netloc) != site_domain(base.netloc):
             continue
         path = parsed.path.rstrip('/')
         if not path or full in seen:
@@ -176,6 +258,9 @@ def find_relevant_links(html, base_url):
     return [url for _, url in scored[:15]]
 
 def fetch_url(url, timeout=10):
+    return fetch_url_final(url, timeout)[0]
+
+def fetch_url_final(url, timeout=10):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
@@ -198,7 +283,7 @@ def fetch_url(url, timeout=10):
             with opener.open(req, timeout=timeout) as resp:
                 raw = resp.read()
                 enc = resp.headers.get_content_charset() or 'utf-8'
-                return raw.decode(enc, errors='replace')
+                return raw.decode(enc, errors='replace'), resp.geturl()
         except Exception as e:
             last_err = e
             continue
@@ -209,7 +294,7 @@ def fetch_single(args):
     try:
         html = fetch_url(sub_url, timeout=timeout)
         text = extract_text(html)
-        if text and len(text) > 100:
+        if text and len(text) > 40:
             return sub_url, html, text
     except Exception as e:
         print("  Fehler {}: {}".format(sub_url, e))
@@ -309,32 +394,34 @@ def fetch_website_deep(url, apiflash_key=None):
 
     # 1. Startseite
     print("  Startseite: {}".format(url))
-    main_html = fetch_url(url)
+    main_html, final_url = fetch_url_final(url)
+    if final_url and site_domain(urllib.parse.urlparse(final_url).netloc) != site_domain(urllib.parse.urlparse(url).netloc):
+        print("  Weiterleitung auf andere Domain: {}".format(final_url))
     main_text = extract_text(main_html)
     results[url] = main_text
 
-    # 2. Kandidaten
-    candidates = find_relevant_links(main_html, url)
+    # 2. Kandidaten (Basis = tatsaechliche Adresse nach Weiterleitung)
+    candidates = find_relevant_links(main_html, final_url or url)
     print("  Kandidaten: {}".format(len(candidates)))
 
     # 3. Unterseiten parallel per urllib
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        futures = list(ex.map(fetch_single, [(u, 8) for u in candidates[:12]]))
+        futures = list(ex.map(fetch_single, [(u, 8) for u in candidates[:14]]))
 
     subpage_data = {}
     for sub_url, html, text in futures:
-        if text and len(results) < 10:
+        if text and len(results) < 12:
             results[sub_url] = text
             if html:
                 subpage_data[sub_url] = html
 
     # 4. Tiefe 2
     for sub_url, html in list(subpage_data.items()):
-        if len(results) >= 12:
+        if len(results) >= 14:
             break
         deep_candidates = find_relevant_links(html, sub_url)
         for deep_url in deep_candidates[:2]:
-            if deep_url not in results and len(results) < 10:
+            if deep_url not in results and len(results) < 13:
                 try:
                     deep_html = fetch_url(deep_url, timeout=6)
                     deep_text = extract_text(deep_html)
@@ -348,23 +435,15 @@ def fetch_website_deep(url, apiflash_key=None):
     #    Auslösen wenn (a) Seite nach Partner/Marken/Hersteller aussieht (hoher Slug-Score)
     #    ODER (b) Marken-Signale im Text. Bis zu 3 Seiten werden fotografiert.
     screenshots = []
-    if apiflash_key:
+    # Sparmodus (ApiFlash Free = 100 Screenshots/Monat): Screenshot NUR als Notfall,
+    # wenn im Text und in den Logo-Bildtexten keine einzige bekannte Marke gefunden wurde.
+    all_text_low = '\n'.join(results.values()).lower()
+    marke_im_text = any(re.search(r'(?<![a-zäöü])' + re.escape(b) + r'(?![a-zäöü])', all_text_low) for b in KNOWN_BRANDS)
+    if apiflash_key and marke_im_text:
+        print("  Kein Screenshot noetig: Marken bereits im Text/Logo-Bildtext gefunden")
+    if apiflash_key and not marke_im_text:
         # Bekannte Marken/Hersteller die auf Logos erscheinen
-        BRAND_SIGNALS = [
-            'somfy', 'becker', 'elero', 'warema', 'rademacher', 'selve', 'gira', 'nice',
-            'griesser', 'weinor', 'markilux', 'roma', 'schellenberg', 'lux-z',
-            'coulisse', 'hunter douglas', 'verosol', 'hörmann', 'hoermann',
-            'sommer', 'novoferm', 'marantec', 'velux', 'heroal', 'schüco', 'schueco',
-            'kömmerling', 'koemmerling', 'rehau', 'internorm', 'aluprof',
-            'alukon', 'alulux', 'hella', 'reflexa', 'lakal', 'beck&heun', 'beck & heun',
-            'duotherm', 'schlotterer', 'renson', 'wo&wo', 'valetta', 'bubendorff',
-            'winsol', 'selt', 'isotra', 'servis climax', 'rufalex', 'lewens', 'erhardt',
-            'leiner', 'klaiber', 'stobag', 'mhz', 'kadeco', 'varisol', 'nova hüppe',
-            'brustor', 'gibus', 'corradi', 'pratic',
-            'partner', 'hersteller', 'markenpartner', 'premiumpartner',
-            'fachpartner', 'vertragspartner', 'lieferant', 'marken',
-            'io-homecontrol', 'io homecontrol', 'tahoma', 'connexoon',
-        ]
+        BRAND_SIGNALS = KNOWN_BRANDS + ['partner', 'hersteller', 'markenpartner', 'premiumpartner', 'fachpartner', 'vertragspartner', 'lieferant', 'marken']
 
         def brand_signal_count(text):
             t = text.lower()
@@ -393,14 +472,14 @@ def fetch_website_deep(url, apiflash_key=None):
             signals = brand_signal_count(text)
             # Gelockerte Regel: hoher Seiten-Score (Partner/Marken/Hersteller-Seite) löst
             #   ALLEIN aus (dort stehen Logos oft ohne Fließtext), ODER >=1 Markensignal.
-            if sc >= 2 or signals >= 1:
+            if sc >= 2:
                 rank = sc * 10 + signals
                 candidates_ss.append((rank, signals, page_url))
 
         candidates_ss.sort(key=lambda x: -x[0])
 
         # Bis zu 3 beste Seiten fotografieren (mehr Chancen das richtige Logo zu erwischen)
-        MAX_SCREENSHOTS = 3
+        MAX_SCREENSHOTS = 1
         seen_slugs = set()
         for rank, signals, ss_target in candidates_ss:
             if len(screenshots) >= MAX_SCREENSHOTS:
@@ -423,8 +502,15 @@ def fetch_website_deep(url, apiflash_key=None):
         path = urllib.parse.urlparse(page_url).path.lower()
         return any(b in path for b in brand_slugs)
 
-    base_limit = max(800, 7000 // len(results))
+    base_limit = max(1000, 10000 // len(results))
+    fund = []
+    for page_url, text in results.items():
+        slug = urllib.parse.urlparse(page_url).path.strip('/') or 'startseite'
+        for l in brand_lines(text, 800):
+            fund.append('[{}] {}'.format(slug, l))
     combined = []
+    if fund:
+        combined.append("=== MARKEN-FUNDSTELLEN (alle Seiten, vollstaendig) ===\n" + '\n'.join(fund)[:3500])
     for page_url, text in results.items():
         slug = urllib.parse.urlparse(page_url).path.strip('/') or 'startseite'
         # Marken-/Partner-Seiten: doppeltes Limit, damit keine Lieferanten-Namen abgeschnitten werden
